@@ -46,6 +46,14 @@ Examples:
   %(prog)s input.jpg --dark-boost 2.0 --bright-cut 0.7 --num 120
         """
     )
+
+    # load default values from options.txt
+    default_values = {}
+    with open('options.txt', 'r') as file:
+        for line in file:
+            if line.strip(): # Skip empty lines
+                key, value = line.strip().split(': ', 1) # Split each line at the first occurrence of ': '
+                default_values[key] = value
     
     parser.add_argument('input', type=str,
                         help='Input image path')
@@ -54,45 +62,45 @@ Examples:
     parser.add_argument('--source', type=str, action='append',
                         help='Source point(s) as "x1,y1" or "x1,y1,x2,y2,..." for multiple points. '
                              'Can be specified multiple times. If not specified, uses image center.')
-    parser.add_argument('--num', type=int, default=30,
+    parser.add_argument('--num', type=int, default=int(default_values["number-contours"]),
                         help='Number of contour levels (default: 30)')
-    parser.add_argument('--min', type=int, default=10,
+    parser.add_argument('--min', type=int, default=int(default_values["min-points"]),
                         help='Minimum number of points per contour (default: 10)')
-    parser.add_argument('--gamma', type=float, default=1.0,
+    parser.add_argument('--gamma', type=float, default=float(default_values["gamma"]),
                         help='Gamma correction factor (default: 1.0)')
-    parser.add_argument('--dark-boost', type=float, default=1.0,
+    parser.add_argument('--dark-boost', type=float, default=float(default_values["dark-boost"]),
                         help='Multiply intensity in dark regions (<40%% brightness)\n'
                              '  • >1.0 → MORE LINES in shadows (great for faces, hair)\n'
                              '  • <1.0 → suppresses dark noise\n'
                              '  • Try: 1.5–2.5 for portraits, 1.0 for flat art')
-    parser.add_argument('--bright-cut', type=float, default=1.0,
+    parser.add_argument('--bright-cut', type=float, default=float(default_values["bright-cut"]),
                         help='Cap intensity in bright regions (>70%% brightness)\n'
                              '  • <1.0 → REDUCES LINES in highlights (clean sky, white areas)\n'
                              '  • =1.0 → no change\n'
                              '  • Try: 0.6–0.8 to avoid over-plotting in bright zones')
-    parser.add_argument('--blur', type=float, default=0.0,
+    parser.add_argument('--blur', type=float, default=float(default_values["blur"]),
                         help='Gaussian blur sigma for input image (default: 0.0)')
-    parser.add_argument('--smooth', type=float, default=2.0,
+    parser.add_argument('--smooth', type=float, default=float(default_values["smooth"]),
                         help='Smooth distance field to reduce grid artifacts (default: 2.0)\n'
                              '  • 0 = no smoothing (may show diagonal artifacts)\n'
                              '  • 1-3 = recommended range for clean contours')
-    parser.add_argument('--scale', type=float, default=1.0,
+    parser.add_argument('--scale', type=float, default=float(default_values["scale"]),
                         help='Scale factor for input image (default: 1.0)')
-    parser.add_argument('--thickness', type=float, default=1.0,
+    parser.add_argument('--thickness', type=float, default=float(default_values["thickness"]),
                         help='Line thickness for contours (default: 1.0)')
-    parser.add_argument('--color', type=str, default='black',
+    parser.add_argument('--color', type=str, default=default_values["color"],
                         help='Contour color (default: black)')
-    parser.add_argument('--bg', type=str, default='white',
+    parser.add_argument('--bg', type=str, default=default_values["background-color"],
                         help='Background color (default: white)')
-    parser.add_argument('--dpi', type=int, default=150,
+    parser.add_argument('--dpi', type=int, default=int(default_values["dpi"]),
                         help='Output DPI (default: 150)')
-    parser.add_argument('--clean-artifacts', action='store_true', default=True,
+    parser.add_argument('--clean-artifacts', action='store_true', default=(default_values["clean-artifacts"]=="True"),
                         help='Split paths at MOVETO codes to remove jump artifacts (default: on)')
     parser.add_argument('--no-clean-artifacts', action='store_false', dest='clean_artifacts',
                         help='Disable path splitting')
     parser.add_argument('--pure-python', action='store_true',
                         help='Use pure Python fast marching (slower, for comparison/fallback)')
-    parser.add_argument('--progress', action='store_true',
+    parser.add_argument('--progress', action='store_true', default=(default_values["show-progress"]=="True"),
                         help='Show progress bar (requires tqdm)')
     
     return parser.parse_args()
