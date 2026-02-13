@@ -485,8 +485,8 @@ def render_contours(T, args, output_path=None):
             
             new_paths = []
             
-            # edge points sorted into each edge of screen (going clockwise from 0,0)
-            edge_points = [[], [(0,h-1)], [(w-1,h-1)], [(w-1,0)]]
+            # edge points sorted into each edge of screen (going counter-clockwise from 0,0)
+            edge_points = [[(0,0)], [(0,h-1)], [(w-1,h-1)], [(w-1,0)]]
             
             print("connecting edge lines")
             
@@ -514,25 +514,21 @@ def render_contours(T, args, output_path=None):
             edge_points[2].sort(key=lambda x: x[1], reverse = True)
             edge_points[3].sort(key=lambda x: x[0], reverse = True)
             
-            do_line=True
+            do_line = True
 
             for i, edge_side in enumerate(edge_points):
                 for j, point in enumerate(edge_side):
                     # do every other line
                     if do_line:
                         # if reached end of edge, connect to corner
-                        if (j >= len(edge_points[i])-1):
-                            # if last edge skip
-                            if (i >= 3):
-                                continue
-                            else:
-                                new_paths.append(MplPath([point, edge_points[i+1][0]]))
-                                do_line = False
+                        if j >= len(edge_points[i])-1:
+                            if i != 3:
+                                new_paths.append(MplPath([point, edge_points[(i+1)%4][0]]))
+                            if i==1 or i==3:
+                                do_line= not do_line
                         else:
                             new_paths.append(MplPath([point, edge_points[i][j+1]]))
-                    
-                    do_line = not do_line
-
+                    do_line=not do_line
 
             print("added " + str(len(new_paths)) + " new edge line")
             processed_paths.extend(new_paths)
