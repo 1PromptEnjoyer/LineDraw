@@ -16,6 +16,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import heapq
+from shapely.geometry import LineString
 
 # Optional scikit-fmm support (C implementation, much faster)
 try:
@@ -480,70 +481,7 @@ def render_contours(T, args, output_path=None):
             artist.remove()
         from matplotlib.collections import LineCollection
         from matplotlib.path import Path as MplPath
-
-        if args.connect_edges:
-            
-            new_paths = []
-            
-            # edge points sorted into each edge of screen (going counter-clockwise from 0,0, with corners)
-            edge_points = [[(0,0), (0,h-1)], [(0,h-1), (w-1,h-1)], [(w-1,h-1), (w-1,0)], [(w-1,0)]]
-            
-            print("connecting edge lines")
-            
-            for path in processed_paths:
-                
-                # if closed loop, continue
-                if np.array_equal(path.vertices[0], path.vertices[-1]):
-                    continue
-                
-                # find the edge points
-                for vertex in path.vertices:
-                    
-                    x0_intercept_found = False
-                    x1_intercept_found = False
-                    y0_intercept_found = False
-                    y1_intercept_found = False
-                    
-                    if abs(vertex[0]) < 1 and not x0_intercept_found:
-                        edge_points[0].append((0, vertex[1]))
-                        x0_intercept_found = True
-                    if abs((vertex[1]+1) - h) < 1 and not y1_intercept_found:
-                        edge_points[1].append((vertex[0], h-1))
-                        y1_intercept_found = True
-                    if abs((vertex[0]+1) - w) < 1 and not x1_intercept_found:
-                        edge_points[2].append((w, vertex[1]))
-                        x1_intercept_found = True
-                    if abs(vertex[1]) < 1 and not y0_intercept_found:
-                        edge_points[3].append((vertex[0], 0))
-                        y0_intercept_found = True
-                    
-                    
-            # sort lists by other value
-            edge_points[0].sort(key=lambda x: x[1])
-            edge_points[1].sort(key=lambda x: x[0])
-            edge_points[2].sort(key=lambda x: x[1], reverse = True)
-            edge_points[3].sort(key=lambda x: x[0], reverse = True)
-
-            # clean artifacts
-            edge_points[0] = [edge_points[0][i] for i in range(len(edge_points[0])) if abs(edge_points[0][(i+1)%len(edge_points[0])][1] - edge_points[0][i][1]) > 2*args.thickness]
-            edge_points[1] = [edge_points[1][i] for i in range(len(edge_points[1])) if abs(edge_points[1][(i+1)%len(edge_points[1])][0] - edge_points[1][i][0]) > 2*args.thickness]
-            edge_points[2] = [edge_points[2][i] for i in range(len(edge_points[2])) if abs(edge_points[2][(i+1)%len(edge_points[2])][1] - edge_points[2][i][1]) > 2*args.thickness]
-            edge_points[3] = [edge_points[3][i] for i in range(len(edge_points[3])) if abs(edge_points[3][(i+1)%len(edge_points[3])][0] - edge_points[3][i][0]) > 2*args.thickness]
-            
-            do_line = True
-
-            for i, edge_side in enumerate(edge_points):
-                for j, point in enumerate(edge_side[:-1]):
-                    # do every other line
-                    if do_line:
-                        new_paths.append(MplPath([point, edge_points[i][j+1]]))
-                    do_line=not do_line
-                if not i==0:
-                    do_line=not do_line
-            
-            print("added " + str(len(new_paths)) + " new edge line")
-            processed_paths.extend(new_paths)
-
+        
         segments = []
         for path in processed_paths:
             segments.append(path.vertices)
@@ -557,6 +495,68 @@ def render_contours(T, args, output_path=None):
     ax.set_xlim(0, w)
     ax.set_ylim(h, 0)
     ax.axis('off')
+
+    if args.connect_edges:
+        
+        print("connecting edge lines")
+
+        contours = cs.get_paths()
+
+        x_points = []
+        y_points = []
+
+        new_paths = []
+
+        # split paths
+        for path in contours:
+            new_paths.extend(split_path_at_moves(path))
+
+        # create dict of segments referenced by their intersection point
+        line_segments = {"x_0_intercepts" : {}, "x_1_intercepts" : {}, "y_0_intercepts" : {}, "y_1_intercepts" : {}}
+
+        for path in new_paths:
+            # if not on border, skip
+            vertex0 = path.vertices[0]
+            vertex1 = path.vertices[-1]
+            
+            if abs(vertex0[0]) > 1 and abs(vertex0[0]-w+1) > 1 and abs(vertex0[1]) > 1 and abs(vertex0[1]-h+1) > 1:
+                continue
+            
+            if vertex0[0] == 0:
+                line_segments["x_0_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
+            if vertex0[0] == w-1:
+                line_segments["x_1_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
+            if vertex0[1] == 0:
+                line_segments["y_0_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
+            if vertex0[1] == h-1:
+                line_segments["y_1_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
+            if vertex1[0] == 0:
+                line_segments["x_0_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
+            if vertex1[0] == w-1:
+                line_segments["x_1_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
+            if vertex1[1] == 0:
+                line_segments["y_0_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
+            if vertex1[1] == h-1:
+                line_segments["y_1_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
+            
+            x_points.append(path.vertices[0][0])
+            x_points.append(path.vertices[-1][0])
+            y_points.append(path.vertices[0][1])
+            y_points.append(path.vertices[-1][1])
+        
+        print(line_segments["x_0_intercepts"].keys())
+        
+        plt.scatter(x_points, y_points, c="red")
+       
+        # print("added " + str(len(new_paths)) + " new edge line")
+
+        segments = []
+        # for path in line_segments["x_0_intercepts"].values():
+        #     segments.append(path.vertices)
+        if segments:
+            lc = LineCollection(segments, colors="blue", linewidths=args.thickness)
+            ax.add_collection(lc)
+    
 
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     
