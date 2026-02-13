@@ -485,8 +485,8 @@ def render_contours(T, args, output_path=None):
             
             new_paths = []
             
-            # edge points sorted into each edge of screen (going counter-clockwise from 0,0)
-            edge_points = [[(0,0)], [(0,h-1)], [(w-1,h-1)], [(w-1,0)]]
+            # edge points sorted into each edge of screen (going counter-clockwise from 0,0, with corners)
+            edge_points = [[(0,0), (0,h-1)], [(0,h-1), (w-1,h-1)], [(w-1,h-1), (w-1,0)], [(w-1,0), (0,0)]]
             
             print("connecting edge lines")
             
@@ -498,14 +498,24 @@ def render_contours(T, args, output_path=None):
                 
                 # find the edge points
                 for vertex in path.vertices:
-                    if abs(vertex[0]) < 0.01:
-                        edge_points[0].append(vertex)
-                    if abs((vertex[1]+1) - h) < 0.01:
-                        edge_points[1].append(vertex)
-                    if abs((vertex[0]+1) - w) < 0.01:
-                        edge_points[2].append(vertex)
-                    if abs(vertex[1]) < 0.01:
-                        edge_points[3].append(vertex)
+                    
+                    x0_intercept_found = False
+                    x1_intercept_found = False
+                    y0_intercept_found = False
+                    y1_intercept_found = False
+                    
+                    if abs(vertex[0]) < 1 and not x0_intercept_found:
+                        edge_points[0].append((0, vertex[1]))
+                        x0_intercept_found = True
+                    if abs((vertex[1]+1) - h) < 1 and not y1_intercept_found:
+                        edge_points[1].append((vertex[0], h-1))
+                        y1_intercept_found = True
+                    if abs((vertex[0]+1) - w) < 1 and not x1_intercept_found:
+                        edge_points[2].append((w, vertex[1]))
+                        x1_intercept_found = True
+                    if abs(vertex[1]) < 1 and not y0_intercept_found:
+                        edge_points[3].append((vertex[0], 0))
+                        y0_intercept_found = True
                     
                     
             # sort lists by other value
@@ -513,23 +523,26 @@ def render_contours(T, args, output_path=None):
             edge_points[1].sort(key=lambda x: x[0])
             edge_points[2].sort(key=lambda x: x[1], reverse = True)
             edge_points[3].sort(key=lambda x: x[0], reverse = True)
+
+            # clean artifacts
+            edge_points[0] = [edge_points[0][i] for i in range(len(edge_points[0])) if abs(edge_points[0][(i+1)%len(edge_points[0])][1] - edge_points[0][i][1]) > 2]
+            edge_points[1] = [edge_points[1][i] for i in range(len(edge_points[1])) if abs(edge_points[1][(i+1)%len(edge_points[1])][0] - edge_points[1][i][0]) > 2]
+            edge_points[2] = [edge_points[2][i] for i in range(len(edge_points[2])) if abs(edge_points[2][(i+1)%len(edge_points[2])][1] - edge_points[2][i][1]) > 2]
+            edge_points[3] = [edge_points[3][i] for i in range(len(edge_points[3])) if abs(edge_points[3][(i+1)%len(edge_points[3])][0] - edge_points[3][i][0]) > 2]
+
+            for i in range(4):
+                print(edge_points[i])
             
             do_line = True
 
             for i, edge_side in enumerate(edge_points):
-                for j, point in enumerate(edge_side):
+                for j, point in enumerate(edge_side[:-1]):
                     # do every other line
                     if do_line:
-                        # if reached end of edge, connect to corner
-                        if j >= len(edge_points[i])-1:
-                            if i != 3:
-                                new_paths.append(MplPath([point, edge_points[(i+1)%4][0]]))
-                            if i==1 or i==3:
-                                do_line= not do_line
-                        else:
-                            new_paths.append(MplPath([point, edge_points[i][j+1]]))
+                        print("draw line: " + str(point) + " , " + str(edge_points[i][j+1]))
+                        new_paths.append(MplPath([point, edge_points[i][j+1]]))
                     do_line=not do_line
-
+                    
             print("added " + str(len(new_paths)) + " new edge line")
             processed_paths.extend(new_paths)
 
