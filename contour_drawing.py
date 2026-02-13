@@ -529,9 +529,6 @@ def render_contours(T, args, output_path=None):
             edge_points[1] = [edge_points[1][i] for i in range(len(edge_points[1])) if abs(edge_points[1][(i+1)%len(edge_points[1])][0] - edge_points[1][i][0]) > 2*args.thickness]
             edge_points[2] = [edge_points[2][i] for i in range(len(edge_points[2])) if abs(edge_points[2][(i+1)%len(edge_points[2])][1] - edge_points[2][i][1]) > 2*args.thickness]
             edge_points[3] = [edge_points[3][i] for i in range(len(edge_points[3])) if abs(edge_points[3][(i+1)%len(edge_points[3])][0] - edge_points[3][i][0]) > 2*args.thickness]
-
-            for i in range(4):
-                print(edge_points[i])
             
             do_line = True
 
@@ -539,7 +536,6 @@ def render_contours(T, args, output_path=None):
                 for j, point in enumerate(edge_side[:-1]):
                     # do every other line
                     if do_line:
-                        print("draw line: " + str(point) + " , " + str(edge_points[i][j+1]))
                         new_paths.append(MplPath([point, edge_points[i][j+1]]))
                     do_line=not do_line
                 if not i==0:
