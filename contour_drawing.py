@@ -16,7 +16,9 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import heapq
-from shapely.geometry import LineString
+from xml.sax.saxutils import escape
+
+EDGE_TOLERANCE = 1.0  # pixels
 
 # Optional scikit-fmm support (C implementation, much faster)
 try:
@@ -99,8 +101,12 @@ Examples:
                         help='Split paths at MOVETO codes to remove jump artifacts (default: on)')
     parser.add_argument('--no-clean-artifacts', action='store_false', dest='clean_artifacts',
                         help='Disable path splitting')
-    parser.add_argument('-connect-edges', action='store_true', default=(default_values["connect-edges"]=="True"),
-                        help='Conenct contour lines that are on the edge of the image (default: off)')
+    parser.add_argument('--connect-edges', action='store_true', default=(default_values["connect-edges"]=="True"),
+                        help='Connect contour lines that are on the edge of the image (default: off)')
+    parser.add_argument('--max-edge-connector', type=float, default=20.0,
+                        help='Maximum perimeter distance for an edge connector in pixels (default: 20)')
+    parser.add_argument('--svg-clean', action='store_true',
+                        help='Write a minimal plotter-friendly SVG instead of using matplotlib savefig')
     parser.add_argument('--pure-python', action='store_true',
                         help='Use pure Python fast marching (slower, for comparison/fallback)')
     parser.add_argument('--progress', action='store_true', default=(default_values["show-progress"]=="True"),
@@ -384,6 +390,130 @@ def split_path_at_moves(path):
     return segments if segments else [path]
 
 
+def get_border_endpoint(vertex, w, h):
+    """Return a snapped border endpoint with perimeter metadata, or None."""
+    x, y = float(vertex[0]), float(vertex[1])
+    right = float(w - 1)
+    bottom = float(h - 1)
+    candidates = []
+
+    if x < EDGE_TOLERANCE:
+        candidates.append(("left", x))
+    if x > right - EDGE_TOLERANCE:
+        candidates.append(("right", abs(right - x)))
+    if y < EDGE_TOLERANCE:
+        candidates.append(("top", y))
+    if y > bottom - EDGE_TOLERANCE:
+        candidates.append(("bottom", abs(bottom - y)))
+
+    if not candidates:
+        return None
+
+    edge_order = {"top": 0, "right": 1, "bottom": 2, "left": 3}
+    edge = min(candidates, key=lambda item: (item[1], edge_order[item[0]]))[0]
+
+    if edge == "top":
+        snapped = (min(max(x, 0.0), right), 0.0)
+        perimeter = snapped[0]
+    elif edge == "right":
+        snapped = (right, min(max(y, 0.0), bottom))
+        perimeter = right + snapped[1]
+    elif edge == "bottom":
+        snapped = (min(max(x, 0.0), right), bottom)
+        perimeter = right + bottom + (right - snapped[0])
+    else:
+        snapped = (0.0, min(max(y, 0.0), bottom))
+        perimeter = right + bottom + right + (bottom - snapped[1])
+
+    return {
+        "point": snapped,
+        "edge": edge,
+        "perimeter": perimeter,
+    }
+
+
+def collect_border_endpoints(paths, w, h):
+    """Collect snapped border-touching endpoints from contour path starts and ends."""
+    endpoints = []
+    for path in paths:
+        vertices = path.vertices
+        if len(vertices) < 2:
+            continue
+        for vertex in (vertices[0], vertices[-1]):
+            endpoint = get_border_endpoint(vertex, w, h)
+            if endpoint is not None:
+                endpoints.append(endpoint)
+    return endpoints
+
+
+def perimeter_path_between(start, end, w, h):
+    """Build a clockwise border-following polyline between two endpoints."""
+    right = float(w - 1)
+    bottom = float(h - 1)
+    corners = [
+        (right, 0.0),
+        (right, bottom),
+        (0.0, bottom),
+        (0.0, 0.0),
+    ]
+    points = [start["point"]]
+
+    for corner, corner_pos in zip(corners, [right, right + bottom, right + bottom + right, 2 * (right + bottom)]):
+        if start["perimeter"] < corner_pos < end["perimeter"]:
+            if points[-1] != corner:
+                points.append(corner)
+
+    if points[-1] != end["point"]:
+        points.append(end["point"])
+    return np.array(points, dtype=float)
+
+
+def build_edge_connectors(paths, w, h, max_connector):
+    """Create short alternating-pair connectors along the image perimeter."""
+    from matplotlib.path import Path as MplPath
+
+    endpoints = collect_border_endpoints(paths, w, h)
+    endpoints.sort(key=lambda endpoint: endpoint["perimeter"])
+
+    connectors = []
+    for idx in range(0, len(endpoints) - 1, 2):
+        start = endpoints[idx]
+        end = endpoints[idx + 1]
+        distance = end["perimeter"] - start["perimeter"]
+        if distance <= max_connector:
+            connectors.append(MplPath(perimeter_path_between(start, end, w, h)))
+
+    return connectors, len(endpoints)
+
+
+def write_clean_svg(output_path, paths, w, h, color, thickness):
+    """Write contour paths as a minimal SVG with one path element per segment."""
+    def format_num(value):
+        return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+    svg_paths = []
+    for path in paths:
+        vertices = path.vertices
+        if len(vertices) < 2:
+            continue
+        commands = [f"M {format_num(vertices[0][0])} {format_num(vertices[0][1])}"]
+        commands.extend(f"L {format_num(x)} {format_num(y)}" for x, y in vertices[1:])
+        svg_paths.append(
+            f'  <path d="{" ".join(commands)}" fill="none" '
+            f'stroke="{escape(str(color))}" stroke-width="{format_num(thickness)}" '
+            'stroke-linecap="round" stroke-linejoin="round" />'
+        )
+
+    svg = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">',
+        *svg_paths,
+        '</svg>',
+        '',
+    ]
+    Path(output_path).write_text("\n".join(svg), encoding="utf-8")
+
+
 def render_contours(T, args, output_path=None):
     """Render contours directly from distance map (matches original behavior)."""
     if output_path is None:
@@ -433,24 +563,26 @@ def render_contours(T, args, output_path=None):
     # Filter contours in place (compatible with matplotlib 3.8+)
     filtered = 0
     artifacts_removed = 0
+    processed_paths = []
     
     if hasattr(cs, 'collections'):
         # Old matplotlib (<3.8)
         total_colls = len(cs.collections)
         for idx, coll in enumerate(cs.collections):
             paths = coll.get_paths()
-            processed_paths = []
+            collection_paths = []
             for p in paths:
                 if len(p.vertices) >= args.min:
                     if args.clean_artifacts:
                         split_paths = split_path_at_moves(p)
                         artifacts_removed += len(split_paths) - 1
-                        processed_paths.extend([sp for sp in split_paths if len(sp.vertices) >= args.min])
+                        collection_paths.extend([sp for sp in split_paths if len(sp.vertices) >= args.min])
                     else:
-                        processed_paths.append(p)
+                        collection_paths.append(p)
                 else:
                     filtered += 1
-            coll.set_paths(processed_paths)
+            processed_paths.extend(collection_paths)
+            coll.set_paths(collection_paths)
             pct = 100 * (idx + 1) / total_colls
             print(f"\rProcessing contours: {pct:.0f}%", end='', flush=True)
         print()  # newline after progress
@@ -458,7 +590,6 @@ def render_contours(T, args, output_path=None):
         # New matplotlib (3.8+)
         all_paths = cs.get_paths()
         total_paths = len(all_paths)
-        processed_paths = []
         for idx, p in enumerate(all_paths):
             if len(p.vertices) >= args.min:
                 if args.clean_artifacts:
@@ -475,19 +606,6 @@ def render_contours(T, args, output_path=None):
                 pct = 100 * (idx + 1) / total_paths
                 print(f"\rProcessing contours: {pct:.0f}%", end='', flush=True)
         print(f"\rProcessing contours: 100%")
-        
-        # Clear existing contours and redraw only the processed paths
-        for artist in list(ax.collections):
-            artist.remove()
-        from matplotlib.collections import LineCollection
-        from matplotlib.path import Path as MplPath
-        
-        segments = []
-        for path in processed_paths:
-            segments.append(path.vertices)
-        if segments:
-            lc = LineCollection(segments, colors=args.color, linewidths=args.thickness)
-            ax.add_collection(lc)
     
     print(f"Filtered out {filtered} tiny contours" + 
           (f", split {artifacts_removed} paths at MOVETO jumps" if artifacts_removed > 0 else ""))
@@ -496,75 +614,47 @@ def render_contours(T, args, output_path=None):
     ax.set_ylim(h, 0)
     ax.axis('off')
 
+    contour_segment_count = len(processed_paths)
+    edge_connectors = []
+    border_endpoint_count = len(collect_border_endpoints(processed_paths, w, h))
     if args.connect_edges:
-        
-        print("connecting edge lines")
+        print("Connecting edge lines...")
+        edge_connectors, border_endpoint_count = build_edge_connectors(
+            processed_paths, w, h, args.max_edge_connector
+        )
+        print(f"Added {len(edge_connectors)} edge connectors")
 
-        contours = cs.get_paths()
-
-        x_points = []
-        y_points = []
-
-        new_paths = []
-
-        # split paths
-        for path in contours:
-            new_paths.extend(split_path_at_moves(path))
-
-        # create dict of segments referenced by their intersection point
-        line_segments = {"x_0_intercepts" : {}, "x_1_intercepts" : {}, "y_0_intercepts" : {}, "y_1_intercepts" : {}}
-
-        for path in new_paths:
-            # if not on border, skip
-            vertex0 = path.vertices[0]
-            vertex1 = path.vertices[-1]
-            
-            if abs(vertex0[0]) > 1 and abs(vertex0[0]-w+1) > 1 and abs(vertex0[1]) > 1 and abs(vertex0[1]-h+1) > 1:
-                continue
-            
-            if vertex0[0] == 0:
-                line_segments["x_0_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
-            if vertex0[0] == w-1:
-                line_segments["x_1_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
-            if vertex0[1] == 0:
-                line_segments["y_0_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
-            if vertex0[1] == h-1:
-                line_segments["y_1_intercepts"][(vertex0[0], vertex0[1])] = (vertex1[0], vertex1[1])
-            if vertex1[0] == 0:
-                line_segments["x_0_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
-            if vertex1[0] == w-1:
-                line_segments["x_1_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
-            if vertex1[1] == 0:
-                line_segments["y_0_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
-            if vertex1[1] == h-1:
-                line_segments["y_1_intercepts"][(vertex1[0], vertex1[1])] = (vertex0[0], vertex0[1])
-            
-            x_points.append(path.vertices[0][0])
-            x_points.append(path.vertices[-1][0])
-            y_points.append(path.vertices[0][1])
-            y_points.append(path.vertices[-1][1])
-        
-        print(line_segments["x_0_intercepts"].keys())
-        
-        plt.scatter(x_points, y_points, c="red")
-       
-        # print("added " + str(len(new_paths)) + " new edge line")
-
-        segments = []
-        # for path in line_segments["x_0_intercepts"].values():
-        #     segments.append(path.vertices)
-        if segments:
-            lc = LineCollection(segments, colors="blue", linewidths=args.thickness)
-            ax.add_collection(lc)
-    
+    final_paths = processed_paths + edge_connectors
+    connected_path_count = max(0, contour_segment_count - len(edge_connectors))
 
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+    if not args.svg_clean:
+        # Clear existing contours and redraw only the processed paths plus connectors.
+        for artist in list(ax.collections):
+            artist.remove()
+        from matplotlib.collections import LineCollection
+
+        segments = [path.vertices for path in final_paths]
+        if segments:
+            lc = LineCollection(segments, colors=args.color, linewidths=args.thickness)
+            ax.add_collection(lc)
     
     # Save with format detection from file extension
     output_format = Path(output_path).suffix[1:].lower() or 'svg'
     print(f"Saving {output_format.upper()}: {output_path}")
-    plt.savefig(output_path, format=output_format, bbox_inches='tight', pad_inches=0)
+    if args.svg_clean:
+        write_clean_svg(output_path, final_paths, w, h, args.color, args.thickness)
+    else:
+        plt.savefig(output_path, format=output_format, bbox_inches='tight', pad_inches=0)
     plt.close()
+
+    print("Path summary:")
+    print(f"  Total contour segments: {contour_segment_count}")
+    print(f"  Border-touching endpoints: {border_endpoint_count}")
+    print(f"  Edge connectors added: {len(edge_connectors)}")
+    print(f"  Final path count: {connected_path_count}")
+    print(f"  Estimated pen lifts: {max(0, connected_path_count - 1)}")
 
 def contour_image(img_path, args, output_path=None):
     print(f"Loading image: {img_path}")
@@ -647,13 +737,13 @@ def main():
     # check for folder, do batch
     if input_path.is_dir():
         # create output directory
-        output_path = Path(str(input_path.parent)+ "\\" + input_path.name + "_outputs")
+        output_path = input_path.parent / (input_path.name + "_outputs")
         output_path.mkdir(parents=True, exist_ok=True)
         for file_path in input_path.iterdir():
             if file_path.is_file():
                 input_paths.append(file_path)
         for input_path in input_paths:
-            contour_image(input_path, args, str(output_path) + "/" + input_path.stem + ".svg")
+            contour_image(input_path, args, output_path / (input_path.stem + ".svg"))
     
     else:
         contour_image(input_path, args)
